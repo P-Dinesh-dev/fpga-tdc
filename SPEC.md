@@ -69,3 +69,106 @@ mixed in here.
 Zero rupees. Recorded because the budget constraint on this project is hard: every tool
 chosen has to be free, and where a paid option exists the free one gets used or the step
 gets redesigned.
+
+---
+
+## 2026-09-17 — Gate 1: GHDL installed, reference testbenches run
+
+Installed GHDL 6.0.0 via `winget install ghdl.ghdl.ucrt64.mcode --source winget`. The
+default invocation failed with a certificate error against the `msstore` source; pinning
+`--source winget` avoids it. Cost: zero.
+
+Cloned `m-labs/tdc-core` into the gitignored `reference/`. Four testbenches ship with it:
+`lbc`, `divider`, `freqc`, `controller`. `sim/run-reference-tb.sh` runs all four from a
+clean checkout and is the reproducible entry point.
+
+### Result: 3 pass out of the box, 1 does not compile
+
+    PASS  lbc
+    PASS  divider
+    PASS  freqc
+    FAIL  controller
+
+### What lbc showed, and why it matters
+
+`tb_lbc` is the encoder testbench, and watching it run is the clearest explanation of the
+bubble problem anywhere in this project. It feeds the encoder thermometer codes like:
+
+    111111111111111111111111111111111111111111111111111000001000000
+
+That isolated 1 sitting inside the run of zeros is a bubble. On real silicon it happens
+because the sampling flip-flops along the chain have slightly different setup and hold
+times and see slightly skewed clock, so the latched code is not a clean run of ones
+followed by a clean run of zeros.
+
+An encoder that searched for the first 1-to-0 transition would stop early and report the
+wrong bin. `tdc_lbc` counts ones instead, so a bubble anywhere in the vector does not move
+the answer. All 64 injected vectors decoded correctly.
+
+This is also why the plan puts the ones-counting encoder in Gate 4 rather than treating it
+as an optimisation. It is not an optimisation. It is the only thing that works.
+
+### Upstream bug 1: tb_controller is missing a generic (FOUND AND FIXED)
+
+`tb_controller` does not compile:
+
+    error: no actual for constant interface "g_EXHIS_COUNT"
+
+`tdc_controller` declares four generics; the testbench's generic map supplies three.
+`g_EXHIS_COUNT` is the number of extra guard bits carried in the histogram accumulator.
+`tdc_controller.vhd:181` shifts them off before the multiply, so they are fractional
+precision rather than data. It also widens two ports, to
+`g_FP_COUNT+g_EXHIS_COUNT-1 downto 0`.
+
+The testbench declares both histogram signals at `g_FP_COUNT` wide, so it is not only
+missing the generic, its histogram signals and memory array are the wrong width too. The
+testbench was written before `g_EXHIS_COUNT` was added to the core and never caught up.
+
+The fix is six lines, saved as
+`patches/0001-tb_controller-add-missing-g_EXHIS_COUNT.patch`:
+
+1. declare `g_EXHIS_COUNT : positive := 4` in the testbench entity. 4 is the default used
+   everywhere else in the design: `tdc.vhd:51`, `tdc_package.vhd:48`, `tdc_hostif.vhd:48`
+2. widen `his_d_w` and `his_d_r`
+3. give the histogram memory its own wider type `t_hismem`. The LUT memory is correctly
+   `g_FP_COUNT` wide and is left alone
+4. pass the generic down in the generic map
+
+After the patch it compiles, runs to completion, and the histogram accumulates correctly
+across all eight bins.
+
+### Upstream bug 2: the LUT assertion fails (FOUND, NOT YET UNDERSTOOD, OPEN)
+
+With bug 1 fixed, `tb_controller` reaches its final check and fails there instead:
+
+    tb_controller.vhd:229:13:@17308ns:(assertion failure): Assertion violation
+
+The calibration LUT the core writes is `0, 2, 4, 6, 7, 9, 11, 13`, which is steps of
+`2, 2, 2, 1, 2, 2, 2`. The assertion expects a uniform ramp of step 2. One step is short.
+
+This is not being claimed as a bug. It is equally possible that the core's integer division
+legitimately rounds one step down and the testbench's expectation is naive. Deciding which
+requires reading `tdc_divider` and the controller's accumulator properly, and that has not
+been done yet.
+
+Swept `g_EXHIS_COUNT` over 1, 2, 3, 4, 5, 6 and 8 using `ghdl -r -gg_EXHIS_COUNT=N`. The
+LUT output is identical at every value. Two things follow:
+
+- the width fix above is complete and correct, and this failure is independent of it
+- the testbench never exercises the guard bits at all. A parameter that changes nothing
+  when swept across three octaves is not under test, which is a coverage gap in its own
+  right
+
+### Status against the Gate 1 exit criterion
+
+Not met yet, deliberately. The exit criterion is `docs/how-it-works.md` written by Dinesh
+in his own words with his own diagrams, covering `tdc_lbc`, `tdc_ringosc`,
+`tdc_channelbank_single` and `ordertaps.py`. That document is interview armour and only
+works if he writes it, so a skeleton of the questions is committed and the answers are not
+pre-filled.
+
+### Carried forward
+
+- Both findings are Gate 12 candidates. Bug 1 is ready to submit as a patch. Bug 2 should
+  be raised as a question, not a bug report, until the divider has actually been read.
+- Cost so far: still zero rupees.

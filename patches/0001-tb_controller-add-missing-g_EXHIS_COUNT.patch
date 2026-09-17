@@ -1,0 +1,41 @@
+diff --git a/tb/controller/tb_controller.vhd b/tb/controller/tb_controller.vhd
+index c923e44..651e734 100644
+--- a/tb/controller/tb_controller.vhd
++++ b/tb/controller/tb_controller.vhd
+@@ -63,6 +63,7 @@ entity tb_controller is
+     generic(
+         g_RAW_COUNT      : positive := 3;
+         g_FP_COUNT       : positive := 5;
++        g_EXHIS_COUNT    : positive := 4;
+         g_FCOUNTER_WIDTH : positive := 3
+     );
+ end entity;
+@@ -82,8 +83,8 @@ signal c_detect   : std_logic;
+ signal c_raw      : std_logic_vector(g_RAW_COUNT-1 downto 0) := (others => '0');
+ signal his_a      : std_logic_vector(g_RAW_COUNT-1 downto 0);
+ signal his_we     : std_logic;
+-signal his_d_w    : std_logic_vector(g_FP_COUNT-1 downto 0);
+-signal his_d_r    : std_logic_vector(g_FP_COUNT-1 downto 0);
++signal his_d_w    : std_logic_vector(g_FP_COUNT+g_EXHIS_COUNT-1 downto 0);
++signal his_d_r    : std_logic_vector(g_FP_COUNT+g_EXHIS_COUNT-1 downto 0);
+ signal oc_start   : std_logic;
+ signal oc_ready   : std_logic;
+ signal oc_freq    : std_logic_vector(g_FCOUNTER_WIDTH-1 downto 0);
+@@ -93,7 +94,8 @@ signal freeze_req : std_logic;
+ signal freeze_ack : std_logic;
+ 
+ type t_ctlmem is array(0 to 2**g_RAW_COUNT-1) of std_logic_vector(g_FP_COUNT-1 downto 0);
+-signal his_memory: t_ctlmem;
++type t_hismem is array(0 to 2**g_RAW_COUNT-1) of std_logic_vector(g_FP_COUNT+g_EXHIS_COUNT-1 downto 0);
++signal his_memory: t_hismem;
+ signal lut_memory: t_ctlmem;
+ 
+ signal end_simulation : boolean := false;
+@@ -103,6 +105,7 @@ begin
+         generic map(
+             g_RAW_COUNT      => g_RAW_COUNT,
+             g_FP_COUNT       => g_FP_COUNT,
++            g_EXHIS_COUNT    => g_EXHIS_COUNT,
+             g_FCOUNTER_WIDTH => g_FCOUNTER_WIDTH
+         )
+         port map(
