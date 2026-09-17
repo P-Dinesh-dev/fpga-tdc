@@ -1,0 +1,22 @@
+# Upstream repos cloned for study. Read them here, do not copy them into this tree -
+# their licenses are not ours to relicense.
+reference/
+
+# Simulator and build artefacts
+*.o
+*.cf
+*.ghw
+*.vcd
+work-obj*.cf
+sim/build/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+
+# Vivado
+*.jou
+*.log
+.Xil/
+vivado_project/
