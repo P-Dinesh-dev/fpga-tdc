@@ -102,8 +102,10 @@ times and see slightly skewed clock, so the latched code is not a clean run of o
 followed by a clean run of zeros.
 
 An encoder that searched for the first 1-to-0 transition would stop early and report the
-wrong bin. `tdc_lbc` counts ones instead, so a bubble anywhere in the vector does not move
-the answer. All 64 injected vectors decoded correctly.
+wrong bin. `tdc_lbc` avoids that, and all 64 injected vectors decoded correctly.
+
+(Corrected 2026-09-17, later the same day: the first version of this entry said `tdc_lbc`
+counts ones. It does not - it counts the *leading* run. See the encoder entry below.)
 
 This is also why the plan puts the ones-counting encoder in Gate 4 rather than treating it
 as an optimisation. It is not an optimisation. It is the only thing that works.
@@ -256,3 +258,78 @@ The thing that cracked this was dumping the histogram rather than reasoning abou
 divider. Two rounds of algebra on the assumption of a uniform histogram produced a
 contradiction, because the assumption was the bug. Worth remembering when the real DNL data
 arrives: check the input distribution before trusting any conclusion drawn from it.
+
+---
+
+## 2026-09-17 — Gate 4 (part): encoder written and exhaustively tested
+
+### Correction: tdc_lbc is not a ones-counter
+
+The Gate 1 entry above said `tdc_lbc` counts ones. It does not. It is a count-leading-
+symbol using divide and conquer over halves: check whether an entire half is all-symbol,
+recurse into the lower half if so, into the upper half if not. Because the comparisons are
+against whole halves and never propagate a carry, the additions collapse into ORs, so it
+costs pure LUT logic and no adders.
+
+That is a different mechanism with different bubble behaviour, and it changes what our own
+encoder should be, so the decision is made explicitly below rather than inherited.
+
+### Decision: popcount, not count-leading-ones
+
+`rtl/tdc_encoder.vhd` counts every one in the vector.
+
+The physical bubble is a **local reordering**, not a random bit error. The hit edge lands
+between two taps and adjacent sampling flip-flops resolve in different orders, so bits near
+the transition come out swapped. A swap moves a one from one position to another and leaves
+the total untouched, which makes a popcount *exactly* invariant under it - for any
+permutation of the vector, not just the likely ones.
+
+Count-leading-ones does not have that property. `1110100000` has a leading run of 3 but
+four ones, and four is the better estimate of where the edge actually got to.
+
+The tradeoff is area: CLS is OR logic, popcount is an adder tree. tdc-core was written for
+a Spartan-6 where that matters. We have LUTs to spare on a 7-series and care more about the
+bin being right, so we pay for the tree. Recorded as a decision, not a default.
+
+### Deliberately not pipelined
+
+At 250 MHz over a few hundred taps the adder tree may not close timing. It is written flat
+anyway. Choosing a pipeline depth before Vivado has reported a single number would be
+inventing a problem and then solving the invented version. Stages get added when the timing
+report asks for them, and the report is a Gate 2 artefact.
+
+### The testbench tests swaps, not random bits
+
+`tb/tb_encoder.vhd` sweeps the edge across all 65 positions, checks the clean thermometer
+code at each, then corrupts it and checks the answer does not move.
+
+The corruption is a swap across the transition, because that is what a bubble physically is.
+Injecting random bit flips would be testing the wrong failure mode - a single flipped bit
+genuinely does change the count by one, and no popcount encoder can or should be immune to
+that. The swaps accumulate as k grows, so the later cases test several simultaneous bubbles.
+
+Deterministic, no random seed. Reproducible matters more than exotic here.
+
+### Mutation test: the coverage is real
+
+A test that passes first time proves nothing until you have watched it fail. Replacing the
+popcount with a true count-leading-ones from tap 0 upward gives:
+
+    clean edge at 0 .. 64      pass
+    1 bubble(s) at edge 1      FAIL, expected 1, got 0
+
+Exactly the intended split: the clean sweep cannot tell the two encoders apart, and the
+first bubble case can. The bubble tests have teeth, and they empirically demonstrate the
+design decision above rather than just asserting it.
+
+(A first attempt at this mutation exited on the first zero while iterating `taps_i'range`,
+which runs high to low, so it failed at the clean sweep instead and proved nothing. Worth
+recording because the mutation looked right and was not.)
+
+### Status
+
+`sim/run-tb.sh` runs our testbenches. `sim/run-reference-tb.sh` runs upstream's.
+
+    PASS  tb_encoder
+
+Cost so far: still zero rupees.
