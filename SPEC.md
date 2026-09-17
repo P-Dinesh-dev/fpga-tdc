@@ -407,3 +407,75 @@ expected. It is deliberately not committed, for the reason above.
 Everything that matters. Gates 5, 6, 8, 9 and 10 cannot start without a board, and no
 amount of Python changes that. What is now true is that the moment real codes exist, DNL,
 INL, the calibration LUT and the uncertainty band are one function call away each.
+
+---
+
+## 2026-09-17 — Gate 4 (rest): coarse/fine boundary arbitration
+
+The worst failure mode in the instrument. The hit is asynchronous to the clock, so a coarse
+counter captured within a setup window of a clock edge may return the old value or the new
+one. Getting it wrong costs one entire clock period - nanoseconds, on a device built to
+measure picoseconds.
+
+`rtl/tdc_coarse.vhd` captures two counters half a period apart: one on the rising edge,
+changing at `t = nT`, one on the falling edge, changing at `t = (n+0.5)T`. A hit can be
+close to at most one of them, so at least one capture is always clean, and the fine value
+says which.
+
+    fine > 3/4 of a period   hit just after a rising edge   use coarse_f + 1
+    fine < 1/4 of a period   hit just before a rising edge  use coarse_f
+    otherwise                hit mid-period                 use coarse_r
+
+### Gray coding was considered and not chosen
+
+A Gray-coded counter would also work, and arguably more simply: only one bit changes at a
+time, so a metastable capture can only ever produce `n` or `n+1`, never a wild value. It is
+not obviously worse. Dual-edge was taken because it makes the ambiguity explicit in logic
+rather than relying on a property of the encoding, and explicit logic is easier to test
+exhaustively. Recorded so the choice can be revisited rather than rediscovered.
+
+### The test is exhaustive because hardware cannot be
+
+`tb/tb_coarse.vhd` sweeps the hit across every tap position of three consecutive periods,
+which visits both quarter-period decision boundaries and the wrap at the end of each period.
+
+This is the clearest case in the project of simulation being better than hardware rather
+than a substitute for it. On silicon you cannot place a hit at a chosen picosecond offset
+from a clock edge on demand. The boundary cases arrive at random and rarely, so a polarity
+error stays hidden for hours and then surfaces as a single nanosecond-scale outlier in a
+dataset - the kind of thing that gets dismissed as noise and quietly corrupts a result.
+
+### On circularity
+
+The testbench encodes the contract the counters are built to: `coarse_r` holds `n`
+throughout period `n`, and `coarse_f`, ticking half a period later, still holds `n-1` until
+the half-way point. That is an assumption, and it is stated rather than buried.
+
+It does not make the test circular, because the assertion is against the true period index
+`n`, which is ground truth independent of the arbitration under test. A backwards polarity
+cannot pass by being consistently wrong in both places.
+
+### Mutation tested
+
+Swapping the two falling-edge branches - precisely the polarity error the module exists to
+avoid - fails at the first case tried:
+
+    period 1, step 0 (fine 60): expected coarse 1, got 0
+
+Step 0 is the hit landing exactly on the rising edge, which is the single worst case and the
+whole reason the module exists.
+
+### Removed: tdc_delayline_sim.vhd
+
+A behavioural delay line was written and then deleted before committing. Nothing used it.
+The arbitration is better tested in isolation, where the hit phase can be set directly
+instead of inferred from propagation delays, and an unexercised module sitting in the tree
+is a liability in a repository whose whole argument is that the work is real. It goes in
+when a system-level test needs it.
+
+### Status
+
+    PASS  tb_encoder
+    PASS  tb_coarse
+
+Cost so far: still zero rupees.

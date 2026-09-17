@@ -14,7 +14,7 @@ command -v ghdl >/dev/null 2>&1 || { echo "ghdl not found. winget install ghdl.g
 mkdir -p sim/build
 ghdl -i --workdir=sim/build rtl/*.vhd tb/*.vhd
 
-for t in tb_encoder; do
+for t in tb_encoder tb_coarse; do
     ghdl -m --workdir=sim/build $t >/dev/null
     if ghdl -r --workdir=sim/build $t 2>&1 | grep -q "Test passed"; then
         echo "PASS  $t"
