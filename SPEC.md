@@ -333,3 +333,77 @@ recording because the mutation looked right and was not.)
     PASS  tb_encoder
 
 Cost so far: still zero rupees.
+
+---
+
+## 2026-09-17 — Gates 6 and 7 (software half): analysis pipeline built and validated
+
+The measurement needs hardware. The maths applied to the measurement does not, so it is
+written and validated now. When fifteen hours of board time finally exist, none of them get
+spent debugging a histogram.
+
+### analysis/codedensity.py
+
+Five functions, no classes, no configuration:
+
+    bin_widths(codes, n_bins, clock_period_ps)        w_i = N_i / N_total * T_clk
+    width_uncertainty(codes, n_bins, clock_period_ps) binomial 1 sigma on each width
+    dnl(widths)                                       w_i / w_mean - 1
+    inl(dnl_lsb)                                      running sum
+    calibration_lut(widths)                           time at each bin centre
+
+`width_uncertainty` is not decoration. Counts are binomial, so sigma(N_i) is
+sqrt(N p (1-p)) and the width inherits it. That is the floor on how well a code-density
+test can ever know a bin, it decides how many hits a run needs, and it is a line in the
+Gate 10 uncertainty budget.
+
+### Validated against synthetic ground truth, and only that
+
+`analysis/test_codedensity.py` builds bin widths with the structure a real chain shows -
+process scatter, every fourth bin wider for the hop between CARRY4 primitives, one very
+wide bin at a clock region boundary, three dead bins - then draws two million hits with
+uniform phase and checks the pipeline recovers what went in.
+
+    bins            400  (3 dead)
+    hits            2,000,000
+    mean bin width  29.03 ps   (true 29.03)
+    pull mean       +0.003   (expect 0)
+    pull std        1.018   (expect 1)
+    worst pull      3.70 sigma
+    DNL range       -1.00 to +5.19 LSB
+    INL range       -2.38 to +4.36 LSB
+
+The test is on the pull, `(measured - true) / sigma`, not on a tolerance someone picked.
+A mean of zero says the estimator is unbiased; a standard deviation of one says the
+uncertainty estimate is itself correct. A fixed tolerance would have caught neither. Worst
+pull of 3.7 sigma across 397 bins is what 397 draws from a standard normal look like.
+
+Also asserted: dead bins come back at exactly DNL = -1, INL closes to zero (it must, since
+DNL is defined against the mean), and the LUT is monotonic and stays inside the clock
+period. A non-monotonic LUT would report time running backwards.
+
+**This validates the analysis, not the device.** Synthetic bin widths are whatever we
+choose them to be. Real ones come from random process mismatch in silicon and are the
+entire point of the project. No figure from this file goes anywhere near the paper.
+
+### The figures stamp their own provenance
+
+`analysis/plots.py` takes a mandatory `source` string and prints it on every figure. There
+is no default and it cannot be omitted. If the string mentions simulation or synthesis, the
+figure also gets a large red SYNTHETIC watermark across it.
+
+This is a guard against the single worst thing that could happen to this project. A
+simulated DNL plot presented as measured would be both worthless and dishonest, and the
+failure mode is not a decision to cheat - it is a stray PNG in a figures directory six
+months from now that nobody can place. Making provenance a required argument means a
+figure cannot be produced without answering the question.
+
+The synthetic check figure was rendered and inspected: the four-bin periodicity, the three
+dead bins pinned at -1, the clock-region spike and the INL step it causes all show up as
+expected. It is deliberately not committed, for the reason above.
+
+### What still needs silicon
+
+Everything that matters. Gates 5, 6, 8, 9 and 10 cannot start without a board, and no
+amount of Python changes that. What is now true is that the moment real codes exist, DNL,
+INL, the calibration LUT and the uncertainty band are one function call away each.
