@@ -172,3 +172,87 @@ pre-filled.
 - Both findings are Gate 12 candidates. Bug 1 is ready to submit as a patch. Bug 2 should
   be raised as a question, not a bug report, until the divider has actually been read.
 - Cost so far: still zero rupees.
+
+---
+
+## 2026-09-17 — Upstream bug 2 resolved: the core is right, the testbench is wrong
+
+Closed the open question from the previous entry. The core's arithmetic is correct and the
+testbench's expectation is naive. Two separate testbench defects produce the failure.
+
+### The arithmetic
+
+`tdc_divider` is a restoring divider that truncates. There is no rounding anywhere on the
+path, so the LUT value for bin `i` is exactly:
+
+    lut[i] = floor( (cumulative_histogram_below_i >> g_EXHIS_COUNT) * oc_sfreq / oc_freq )
+
+The testbench sets `oc_freq = 2` and `oc_sfreq = 1`, so the scale factor is exactly one
+half, as its own comment says.
+
+### The actual histogram is not uniform
+
+Dumping the final count per bin:
+
+    bin 0  64      bin 4  64
+    bin 1  64      bin 5  64
+    bin 2  64      bin 6  64
+    bin 3  63      bin 7  64
+
+Bin 3 is one hit short. Feeding those real counts through the formula above predicts the
+LUT exactly:
+
+    predicted  [0, 2, 4, 6, 7, 9, 11, 13]
+    observed   [0, 2, 4, 6, 7, 9, 11, 13]
+
+All eight values, no residual. The core is doing precisely what it should.
+
+### Root cause of the short bin
+
+The testbench's pulse generator is a free-running process with no synchronisation to the
+acquisition window:
+
+```vhdl
+process
+begin
+    c_detect <= '1';
+    c_raw <= std_logic_vector(unsigned(c_raw) + 1);
+    wait until rising_edge(clk);
+    c_detect <= '0';
+    wait until rising_edge(clk);
+    wait until rising_edge(clk);
+    wait until rising_edge(clk);
+end process;
+```
+
+It cycles forever. When the controller stops accumulating, it stops mid-cycle, so whichever
+bin the generator happened to be sitting on receives one fewer hit. Bin 3 is simply where
+the window closed. Nothing selects bin 3; change the timing and it moves.
+
+### Verdict
+
+Not a core bug. Two testbench defects:
+
+1. **Unsynchronised stimulus.** The generator must be stopped on a bin boundary, or the
+   acquisition window aligned to a whole number of passes, or the histogram will never be
+   uniform.
+2. **An assertion that cannot tolerate truncation.** `assert lut_memory(i) = v_step*(i-1)`
+   assumes both a perfectly uniform histogram and exact division. Neither holds, and the
+   second never will, because the divider floors by design.
+
+### Consequence for Gate 12
+
+This is now a much better upstream contribution than bug 1 alone. The submission is: a
+patch that makes the testbench compile, plus a precise account of why the remaining
+assertion fails, with the arithmetic shown and the root cause identified. That is a report
+a maintainer can act on without reproducing anything.
+
+The fix for defect 1 is not written yet, deliberately - changing upstream stimulus timing
+without understanding why the window closes where it does would be guessing.
+
+### Method note
+
+The thing that cracked this was dumping the histogram rather than reasoning about the
+divider. Two rounds of algebra on the assumption of a uniform histogram produced a
+contradiction, because the assumption was the bug. Worth remembering when the real DNL data
+arrives: check the input distribution before trusting any conclusion drawn from it.
